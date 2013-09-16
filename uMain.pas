@@ -31,9 +31,9 @@ type
     procedure btnDisconnectClick(Sender: TObject);
     procedure btnPublishClick(Sender: TObject);
     procedure btnPingClick(Sender: TObject);
-    procedure OnConnAck(Sender: TObject; ReturnCode: TConnectReturn);
+    procedure OnConnAck(Sender: TObject; ReturnCode: integer);
     procedure OnPingResp(Sender: TObject);
-    procedure OnSubAck(Sender: TObject);
+    procedure OnSubAck(Sender: TObject; MessageID: integer; GrantedQoS: integer);
     procedure OnUnSubAck(Sender: TObject);
     procedure OnPublish(Sender: TObject; topic, payload: string);
     procedure btnSubscribeClick(Sender: TObject);
@@ -58,7 +58,7 @@ begin
   mStatus.Lines.Add('Publish Received. Topic: '+ topic + ' Payload: ' + payload);
 end;
 
-procedure TfMain.OnSubAck(Sender: TObject);
+procedure TfMain.OnSubAck(Sender: TObject; MessageID: integer; GrantedQoS: integer);
 begin
   mStatus.Lines.Add('Sub Ack Received');
 end;
@@ -68,7 +68,7 @@ begin
   mStatus.Lines.Add('Unsubscribe Ack Received');
 end;
 
-procedure TfMain.OnConnAck(Sender: TObject; ReturnCode: TConnectReturn);
+procedure TfMain.OnConnAck(Sender: TObject; ReturnCode: integer);
 begin
   mStatus.Lines.Add('Connection Acknowledged, Return Code: ' + IntToStr(Ord(ReturnCode)));
 end;
