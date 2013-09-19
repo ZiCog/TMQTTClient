@@ -124,7 +124,7 @@ type
                          if MQTTClient.Connect then
                            begin
                              // Make subscriptions
-                             MQTTClient.Subscribe('/jack/says/#');
+                             MQTTClient.Subscribe('github.com/jamiei/TMQTTClient/#');
                              state := RUNNING;
                            end
                          else
@@ -137,7 +137,7 @@ type
                         // Publish stuff
                         if pubTimer mod 10 = 0 then
                           begin
-                            if not MQTTClient.Publish('/jack/says/', message) then
+                            if not MQTTClient.Publish('github.com/jamiei/TMQTTClient', message) then
                               begin
                                 state := FAILING;
                               end;
