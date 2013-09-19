@@ -7,8 +7,8 @@ __history
 *.map
 *.exe
 *.dll
-*.so
+bin/*
 *.o
 *.ppu
-*.a
-bin/*
+*.*~
+examples/embeddedApp/embeddedApp

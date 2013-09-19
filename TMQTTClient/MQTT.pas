@@ -28,6 +28,9 @@
   THE SOFTWARE.
    -------------------------------------------------
 }
+
+{$mode objfpc}
+
 unit MQTT;
 
 interface
@@ -38,7 +41,7 @@ uses
 type
   //  Message type. 4 Bit unsigned.
   TMQTTMessageType = (
-          Reserved0,	//0	Reserved
+          Reserved0, //0	Reserved
           CONNECT, //	1	Client request to connect to Broker
           CONNACK, //	2	Connect Acknowledgment
           PUBLISH, //	3	Publish message
@@ -63,8 +66,8 @@ type
 
   TMQTTClient = class(TObject)
       private
-        FClientID: string;
-        FHostname: string;
+        FClientID: ansistring;
+        FHostname: ansistring;
         FPort: Integer;
         FReadThread: TMQTTReadThread;
         FSocket: TTCPBlockSocket;
@@ -78,8 +81,8 @@ type
         FUnSubAckEvent: TUnSubAckEvent;
         // Gets a next Message ID and increases the Message ID Increment
         function GetMessageID: TBytes;
-        // Takes a string and converts to An Array of Bytes preceded by 2 Length Bytes.
-        function StrToBytes(str: string; perpendLength: boolean): TUTF8Text;
+        // Takes a ansistring and converts to An Array of Bytes preceded by 2 Length Bytes.
+        function StrToBytes(str: ansistring; perpendLength: boolean): TUTF8Text;
         // Byte Array Helper Functions
         procedure AppendArray(var Dest: TUTF8Text; Source: Array of Byte);
         procedure CopyIntoArray(var DestArray: Array of Byte; SourceArray: Array of Byte; StartIndex: integer);
@@ -89,11 +92,11 @@ type
         function RemainingLength(MessageLength: Integer): TRemainingLength;
         // Variable Header per command creation funcs
         function VariableHeaderConnect(KeepAlive: Word): TBytes;
-        function VariableHeaderPublish(topic: string): TBytes;
+        function VariableHeaderPublish(topic: ansistring): TBytes;
         function VariableHeaderSubscribe: TBytes;
         function VariableHeaderUnsubscribe: TBytes;
         // Helper Function - Puts the seperate component together into an Array of Bytes for transmission
-        function BuildCommand(FixedHeader: Byte; RemainL: TRemainingLength; VariableHead: TBytes; Payload: Array of Byte): TBytes;
+        function BuildCommand(FixedHead: Byte; RemainL: TRemainingLength; VariableHead: TBytes; Payload: Array of Byte): TBytes;
         // Internally Write the provided data to the Socket. Wrapper function.
         function SocketWrite(Data: TBytes): boolean;
         // These are chained event handlers from the ReceiveThread. They trigger the
@@ -102,20 +105,21 @@ type
         procedure OnRTPingResp(Sender: TObject);
         procedure OnRTSubAck(Sender: TObject; MessageID: integer; GrantedQoS: integer);
         procedure OnRTUnSubAck(Sender: TObject; MessageID: integer);
-        procedure OnRTPublish(Sender: TObject; topic, payload: string);
+        procedure OnRTPublish(Sender: TObject; topic, payload: ansistring);
       public
         function isConnected: boolean;
         function Connect: boolean;
         function Disconnect: boolean;
-        function Publish(Topic: string; sPayload: string): boolean; overload;
-        function Publish(Topic: string; sPayload: string; Retain: boolean): boolean; overload;
-        function Subscribe(Topic: string): integer;
-        function Unsubscribe(Topic: string): integer;
+        procedure ForceDisconnect;
+        function Publish(Topic: ansistring; sPayload: ansistring): boolean; overload;
+        function Publish(Topic: ansistring; sPayload: ansistring; Retain: boolean): boolean; overload;
+        function Subscribe(Topic: ansistring): integer;
+        function Unsubscribe(Topic: ansistring): integer;
         function PingReq: boolean;
-        constructor Create(Hostname: string; Port: integer); overload;
+        constructor Create(Hostname: ansistring; Port: integer); overload;
         destructor Destroy; override;
 
-        property ClientID : string read FClientID write FClientID;
+        property ClientID : ansistring read FClientID write FClientID;
         property OnConnAck : TConnAckEvent read FConnAckEvent write FConnAckEvent;
         property OnPublish : TPublishEvent read FPublishEvent write FPublishEvent;
         property OnPingResp : TPingRespEvent read FPingRespEvent write FPingRespEvent;
@@ -162,10 +166,10 @@ begin
       begin
         Result := True;
         FReadThread := TMQTTReadThread.Create(@FSocket);
-        FReadThread.OnConnAck := Self.OnRTConnAck;
-        FReadThread.OnPublish := Self.OnRTPublish;
-        FReadThread.OnPingResp := Self.OnRTPingResp;
-        FReadThread.OnSubAck := Self.OnRTSubAck;
+        FReadThread.OnConnAck := @Self.OnRTConnAck;
+        FReadThread.OnPublish := @Self.OnRTPublish;
+        FReadThread.OnPingResp := @Self.OnRTPingResp;
+        FReadThread.OnSubAck := @Self.OnRTSubAck;
         FReadThread.Resume;
       end else Result := False;
     end;
@@ -193,6 +197,25 @@ begin
     FisConnected := False;
     FSocket.Free;
   end else Result := False;
+end;
+
+{*------------------------------------------------------------------------------
+  Terminate the reader thread and close the socket forcibly.
+------------------------------------------------------------------------------*}
+procedure TMQTTClient.ForceDisconnect;
+begin
+    if FReadThread <> nil then
+    begin
+        FReadThread.Terminate;
+        FReadThread := nil;
+    end;
+    if FSocket <> nil then
+    begin
+        FSocket.CloseSocket;
+        FSocket.Free;
+        FSocket := nil;
+    end;
+    FisConnected := False;
 end;
 
 {*------------------------------------------------------------------------------
@@ -224,7 +247,7 @@ end;
   @param Retain   Should this message be retained for clients connecting subsequently
   @return Returns whether the Data was written successfully to the socket.
 ------------------------------------------------------------------------------*}
-function TMQTTClient.Publish(Topic, sPayload: string; Retain: boolean): boolean;
+function TMQTTClient.Publish(Topic, sPayload: ansistring; Retain: boolean): boolean;
 var
   Data: TBytes;
   FH: Byte;
@@ -250,9 +273,9 @@ end;
   @param sPayload   The Actual Payload of the message eg 18 degrees celcius
   @return Returns whether the Data was written successfully to the socket.
 ------------------------------------------------------------------------------*}
-function TMQTTClient.Publish(Topic, sPayload: string): boolean;
+function TMQTTClient.Publish(Topic, sPayload: ansistring): boolean;
 begin
-  Publish(Topic, sPayload, False);
+  Result := Publish(Topic, sPayload, False);
 end;
 
 {*------------------------------------------------------------------------------
@@ -262,7 +285,7 @@ end;
   @return Returns the Message ID used to send the message for the purpose of comparing
   it to the Message ID used later in the SUBACK event handler.
 ------------------------------------------------------------------------------*}
-function TMQTTClient.Subscribe(Topic: string): integer;
+function TMQTTClient.Subscribe(Topic: ansistring): integer;
 var
   Data: TBytes;
   FH: Byte;
@@ -291,7 +314,7 @@ end;
   @return Returns the Message ID used to send the message for the purpose of comparing
   it to the Message ID used later in the UNSUBACK event handler.
 ------------------------------------------------------------------------------*}
-function TMQTTClient.Unsubscribe(Topic: string): integer;
+function TMQTTClient.Unsubscribe(Topic: ansistring): integer;
 var
   Data: TBytes;
   FH: Byte;
@@ -327,7 +350,7 @@ end;
   @param Port   Port of the MQTT Server
   @return Instance
 ------------------------------------------------------------------------------*}
-constructor TMQTTClient.Create(Hostname: string; Port: integer);
+constructor TMQTTClient.Create(Hostname: ansistring; Port: integer);
 begin
   inherited Create;
   Randomize;
@@ -381,7 +404,7 @@ begin
   end;
 end;
 
-function TMQTTClient.StrToBytes(str: string; perpendLength: boolean): TUTF8Text;
+function TMQTTClient.StrToBytes(str: ansistring; perpendLength: boolean): TUTF8Text;
 var
   i, offset: integer;
 begin
@@ -456,7 +479,7 @@ begin
   Result[iByteIndex] := KeepAlive;
 end;
 
-function TMQTTClient.VariableHeaderPublish(topic: string): TBytes;
+function TMQTTClient.VariableHeaderPublish(topic: ansistring): TBytes;
 var
   BytesTopic: TUTF8Text;
 begin
@@ -491,7 +514,7 @@ begin
   Move(Source, Dest[DestLen], Length(Source));
 end;
 
-function TMQTTClient.BuildCommand(FixedHeader: Byte; RemainL: TRemainingLength;
+function TMQTTClient.BuildCommand(FixedHead: Byte; RemainL: TRemainingLength;
   VariableHead: TBytes; Payload: Array of Byte): TBytes;
 var
   iNextIndex: integer;
@@ -499,7 +522,7 @@ begin
   // Attach Fixed Header (1 byte)
   iNextIndex := 0;
   SetLength(Result, 1);
-  Result[iNextIndex] := FixedHeader;
+  Result[iNextIndex] := FixedHead;
 
   // Attach RemainingLength (1-4 bytes)
   iNextIndex := Length(Result);
@@ -527,7 +550,7 @@ begin
   if Assigned(OnPingResp) then OnPingResp(Self);
 end;
 
-procedure TMQTTClient.OnRTPublish(Sender: TObject; topic, payload: string);
+procedure TMQTTClient.OnRTPublish(Sender: TObject; topic, payload: ansistring);
 begin
   if Assigned(OnPublish) then OnPublish(Self, topic, payload);
 end;

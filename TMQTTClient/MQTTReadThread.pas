@@ -25,12 +25,17 @@
   THE SOFTWARE.
   -------------------------------------------------
 }
+
+{$mode objfpc} 
+
 unit MQTTReadThread;
 
 interface
 
 uses
-  SysUtils, Classes, blcksock;
+  SysUtils, Classes, blcksock, BaseUnix;
+
+type TBytes = array of Byte;
 
 type
   TMQTTMessage = Record
@@ -39,10 +44,13 @@ type
     Data: TBytes;
   End;
 
+Type TRxStates = (RX_FIXED_HEADER, RX_LENGTH, RX_DATA, RX_ERROR);
+
+
   PTCPBlockSocket = ^TTCPBlockSocket;
 
   TConnAckEvent = procedure (Sender: TObject; ReturnCode: integer) of object;
-  TPublishEvent = procedure (Sender: TObject; topic, payload: string) of object;
+  TPublishEvent = procedure (Sender: TObject; topic, payload: ansistring) of object;
   TPingRespEvent = procedure (Sender: TObject) of object;
   TSubAckEvent = procedure (Sender: TObject; MessageID: integer; GrantedQoS: integer) of object;
   TUnSubAckEvent = procedure (Sender: TObject; MessageID: integer) of object;
@@ -50,7 +58,7 @@ type
   TMQTTReadThread = class(TThread)
   private
     FPSocket: PTCPBlockSocket;
-    FCurrentData: TMQTTMessage;
+    CurrentMessage: TMQTTMessage;
     // Events
     FConnAckEvent: TConnAckEvent;
     FPublishEvent: TPublishEvent;
@@ -58,10 +66,8 @@ type
     FSubAckEvent: TSubAckEvent;
     FUnSubAckEvent: TUnSubAckEvent;
     // This takes a 1-4 Byte Remaining Length bytes as per the spec and returns the Length value it represents
-    function RemainingLengthToInt(RLBytes: TBytes): Integer;
     // Increases the size of the Dest array and Appends NewBytes to the end of DestArray 
-    procedure AppendBytes(var DestArray: TBytes; const NewBytes: TBytes);
-    // Takes a 2 Byte Length array and returns the length of the string it preceeds as per the spec.
+    // Takes a 2 Byte Length array and returns the length of the ansistring it preceeds as per the spec.
     function BytesToStrLength(LengthBytes: TBytes): integer;
     // This is our data processing and event firing command. To be called via Synchronize.
     procedure HandleData;
@@ -92,44 +98,56 @@ end;
 
 procedure TMQTTReadThread.Execute;
 var
-  CurrentMessage: TMQTTMessage;
-  RLInt: Integer;
-  Buffer: TBytes;
-  i: integer;
+  rxState: TRxStates;
+  remainingLength: integer;
+  digit: integer;
+  multiplier: integer;
 begin
+  rxState := RX_FIXED_HEADER;
   while not Terminated do
     begin
-      CurrentMessage.FixedHeader := 0;
-      CurrentMessage.RL := nil;
-      CurrentMessage.Data := nil;
-      CurrentMessage.FixedHeader := FPSocket^.RecvByte(1000);
-      // If we couldn't read from the socket try to read the rest of the message.
-      if not ((FPSocket^.LastError <> 0) and (CurrentMessage.FixedHeader = 0)) then
-        begin
-          SetLength(CurrentMessage.RL, 1);
-          SetLength(Buffer, 1);
-          CurrentMessage.RL[0] := FPSocket^.RecvByte(1000);
-          for i := 1 to 3 do
-            begin
-              if (( CurrentMessage.RL[i - 1] and 128) <> 0) then
-              begin
-                Buffer[0] := FPSocket^.RecvByte(1000);
-                AppendBytes(CurrentMessage.RL, Buffer);
-              end else Break;
+        case rxState of
+        RX_FIXED_HEADER: begin
+                multiplier := 1;
+                remainingLength := 0;
+                CurrentMessage.Data := nil;
+                CurrentMessage.FixedHeader := FPSocket^.RecvByte(1000);
+                if (FPSocket^.LastError = ESysETIMEDOUT) then continue;
+                if (FPSocket^.LastError <> 0) then
+                  rxState := RX_ERROR
+                else
+                  rxState := RX_LENGTH;
             end;
-
-          RLInt := RemainingLengthToInt(CurrentMessage.RL);
-          if (RLInt > 0)  then
-            begin
-              SetLength(CurrentMessage.Data, RLInt);
-              FPSocket^.RecvBufferEx(Pointer(CurrentMessage.Data), RLInt, 1000);
+        RX_LENGTH: begin
+                digit := FPSocket^.RecvByte(1000);
+                if (FPSocket^.LastError = ESysETIMEDOUT) then continue;
+                if (FPSocket^.LastError <> 0) then
+                  rxState := RX_ERROR
+                else
+                begin
+                  remainingLength := remainingLength + (digit and 127) * multiplier;
+                  if (digit and 128) > 0 then
+                  begin
+                    multiplier := multiplier * 128;
+                    rxState := RX_LENGTH;
+                  end
+                  else
+                    rxState := RX_DATA;
+                end;
             end;
-
-          if not (FPSocket^.LastError <> 0) then
-            begin
-              //ProcessCommand.
-              FCurrentData := CurrentMessage;
-              Synchronize(HandleData);
+        RX_DATA: begin
+                SetLength(CurrentMessage.Data, remainingLength);
+                FPSocket^.RecvBufferEx(Pointer(CurrentMessage.Data), remainingLength, 1000);
+                if (FPSocket^.LastError <> 0) then
+                  rxState := RX_ERROR
+                else
+                begin
+                  Synchronize(@HandleData);
+                  rxState := RX_FIXED_HEADER;
+                end;
+            end;
+        RX_ERROR: begin
+                sleep(1000);
             end;
         end;
     end;
@@ -140,24 +158,24 @@ var
   MessageType: Byte;
   DataLen: integer;
   QoS: integer;
-  Topic: string;
-  Payload: string;
+  Topic: ansistring;
+  Payload: ansistring;
   ResponseVH: TBytes;
   ConnectReturn: Integer;
 begin
-  if (FCurrentData.FixedHeader <> 0) then
+  if (CurrentMessage.FixedHeader <> 0) then
     begin
-      MessageType := FCurrentData.FixedHeader shr 4;
+      MessageType := CurrentMessage.FixedHeader shr 4;
 
       if (MessageType = Ord(MQTT.CONNACK)) then
         begin
           // Check if we were given a Connect Return Code.
           ConnectReturn := 0;
           // Any return code except 0 is an Error
-          if ((Length(FCurrentData.Data) > 0) and (Length(FCurrentData.Data) < 4)) then
+          if ((Length(CurrentMessage.Data) > 0) and (Length(CurrentMessage.Data) < 4)) then
             begin
-              ConnectReturn := FCurrentData.Data[1];
-              Exception.Create('Connect Error Returned by the Broker. Error Code: ' + IntToStr(FCurrentData.Data[1]));
+              ConnectReturn := CurrentMessage.Data[1];
+              Exception.Create('Connect Error Returned by the Broker. Error Code: ' + IntToStr(CurrentMessage.Data[1]));
             end;
           if Assigned(OnConnAck) then OnConnAck(Self, ConnectReturn);
         end
@@ -165,24 +183,24 @@ begin
       if (MessageType = Ord(MQTT.PUBLISH)) then
         begin
           // Read the Length Bytes
-          DataLen := BytesToStrLength(Copy(FCurrentData.Data, 0, 2));
+          DataLen := BytesToStrLength(Copy(CurrentMessage.Data, 0, 2));
           // Get the Topic
-          SetString(Topic, PChar(@FCurrentData.Data[2]), DataLen);
+          SetString(Topic, PChar(@CurrentMessage.Data[2]), DataLen);
           // Get the Payload
-          SetString(Payload, PChar(@FCurrentData.Data[2 + DataLen]), (Length(FCurrentData.Data) - 2 - DataLen));
+          SetString(Payload, PChar(@CurrentMessage.Data[2 + DataLen]), (Length(CurrentMessage.Data) - 2 - DataLen));
           if Assigned(OnPublish) then OnPublish(Self, Topic, Payload);
         end
       else
       if (MessageType = Ord(MQTT.SUBACK)) then
         begin
           // Reading the Message ID
-          ResponseVH := Copy(FCurrentData.Data, 0, 2);
+          ResponseVH := Copy(CurrentMessage.Data, 0, 2);
           DataLen := BytesToStrLength(ResponseVH);
           // Next Read the Granted QoS
           QoS := 0;
-          if (Length(FCurrentData.Data) - 2) > 0 then
+          if (Length(CurrentMessage.Data) - 2) > 0 then
             begin
-              ResponseVH := Copy(FCurrentData.Data, 2, 1);
+              ResponseVH := Copy(CurrentMessage.Data, 2, 1);
               QoS := ResponseVH[0];
             end;
           if Assigned(OnSubAck) then OnSubAck(Self, DataLen, QoS);
@@ -191,7 +209,7 @@ begin
       if (MessageType = Ord(MQTT.UNSUBACK)) then
         begin
           // Read the Message ID for the event handler
-          ResponseVH := Copy(FCurrentData.Data, 0, 2);
+          ResponseVH := Copy(CurrentMessage.Data, 0, 2);
           DataLen := BytesToStrLength(ResponseVH);
           if Assigned(OnUnSubAck) then OnUnSubAck(Self, DataLen);
         end
@@ -210,35 +228,6 @@ begin
   Result := 0;
   Result := LengthBytes[0] shl 8;
   Result := Result + LengthBytes[1];
-end;
-
-function TMQTTReadThread.RemainingLengthToInt(RLBytes: TBytes): Integer;
-var
-  multi: integer;
-  i: integer;
-  digit: Byte;
-begin
-  multi := 1;
-  i := 0;
-  Result := 0;
-
-  digit := RLBytes[i];
-  repeat
-    digit := RLBytes[i];
-    Result := Result + (digit and 127) * multi;
-    multi := multi * 128;
-    Inc(i);
-  until ((digit and 128) = 0);
-end;
-
-procedure TMQTTReadThread.AppendBytes(var DestArray: TBytes;
-  const NewBytes: TBytes);
-var
-  DestLen: Integer;
-begin
-  DestLen := Length(DestArray);
-  SetLength(DestArray, DestLen + Length(NewBytes));
-  Move(NewBytes, DestArray[DestLen], Length(NewBytes));
 end;
 
 end.
